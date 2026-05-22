@@ -31,16 +31,20 @@ def normalize_activity(activity_list_item: dict, detail: dict) -> dict:
     if total_time_cs <= 0:
         total_time_cs = (activity_list_item.get("totalTime") or 0)  # 已经厘秒
 
+    # 暂停时间（COROS手表自动暂停或手动暂停）
+    pause_time_cs = detail.get("summary", {}).get("pauseTime", 0)
+    move_time_cs = max(total_time_cs - pause_time_cs, 0)
+
     # 心率（只从最后一个lap取，避免跨lap重复）
     hrs = [it.get("avgHr", 0) for it in last_lap_items if it.get("avgHr")]
     max_hrs = [it.get("maxHr", 0) for it in last_lap_items if it.get("maxHr")]
     avg_hr = round(sum(hrs) / len(hrs)) if hrs else None
     max_hr = max(max_hrs) if max_hrs else None
 
-    # 配速 = 总时间 / 总距离
+    # 配速 = 移动时间 / 总距离（排除暂停，与手表显示一致）
     pace_min_per_km = None
-    if total_distance_cm > 0 and total_time_cs > 0:
-        pace_sec_per_km = (total_time_cs / 100) / (total_distance_cm / 100000)
+    if total_distance_cm > 0 and move_time_cs > 0:
+        pace_sec_per_km = (move_time_cs / 100) / (total_distance_cm / 100000)
         pace_min_per_km = round(pace_sec_per_km / 60, 2)
 
     # 步频（最后一个lap的segments）
@@ -91,8 +95,8 @@ def normalize_activity(activity_list_item: dict, detail: dict) -> dict:
     return {
         "summary": {
             "start_time": start_time,
-            "duration_sec": round(total_time_cs / 100, 1),
-            "duration_min": round(total_time_cs / 100 / 60, 1),
+            "duration_sec": round(move_time_cs / 100, 1),
+            "duration_min": round(move_time_cs / 100 / 60, 1),
             "distance_km": round(total_distance_cm / 100000, 2),
             "pace_min_per_km": pace_min_per_km,
             "avg_hr_bpm": avg_hr,
