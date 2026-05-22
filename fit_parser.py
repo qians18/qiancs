@@ -3,6 +3,61 @@ FIT文件解析器 —— 从Garmin FIT格式提取跑步指标
 """
 import datetime
 from fitparse import FitFile
+import fitparse.base as _base
+
+
+def _patch_fitparse():
+    """修复 COROS FIT 文件中非标字段定义 (uint32 size=1 → byte)"""
+    orig = _base.FitFile._parse_definition_message
+
+    def patched(self, header):
+        endian = '>' if self._read_struct('xB') else '<'
+        global_mesg_num, num_fields = self._read_struct('HB', endian=endian)
+        mesg_type = _base.MESSAGE_TYPES.get(global_mesg_num)
+        field_defs = []
+
+        for _ in range(num_fields):
+            field_def_num, field_size, base_type_num = self._read_struct('3B', endian=endian)
+            field = mesg_type.fields.get(field_def_num) if mesg_type else None
+            base_type = _base.BASE_TYPES.get(base_type_num, _base.BASE_TYPE_BYTE)
+
+            if (field_size % base_type.size) != 0:
+                base_type = _base.BASE_TYPE_BYTE
+
+            if field and field.components:
+                for component in field.components:
+                    if component.accumulate:
+                        accumulators = self._accumulators.setdefault(global_mesg_num, {})
+                        accumulators[component.def_num] = 0
+
+            field_defs.append(_base.FieldDefinition(
+                field=field, def_num=field_def_num,
+                base_type=base_type, size=field_size,
+            ))
+
+        dev_field_defs = []
+        if header.is_developer_data:
+            num_dev_fields = self._read_struct('B', endian=endian)
+            for _ in range(num_dev_fields):
+                field_def_num, field_size, dev_data_index = self._read_struct('3B', endian=endian)
+                field = _base.get_dev_type(dev_data_index, field_def_num)
+                dev_field_defs.append(_base.DevFieldDefinition(
+                    field=field, dev_data_index=dev_data_index,
+                    def_num=field_def_num, size=field_size,
+                ))
+
+        def_mesg = _base.DefinitionMessage(
+            header=header, endian=endian, mesg_type=mesg_type,
+            mesg_num=global_mesg_num, field_defs=field_defs,
+            dev_field_defs=dev_field_defs,
+        )
+        self._local_mesgs[header.local_mesg_num] = def_mesg
+        return def_mesg
+
+    _base.FitFile._parse_definition_message = patched
+
+
+_patch_fitparse()
 
 
 def parse_fit(file_path: str) -> dict:
@@ -52,7 +107,7 @@ def parse_fit(file_path: str) -> dict:
             speeds.append(spd)
         cad = r.get("cadence")
         if cad is not None:
-            cadences.append(cad)
+            cadences.append(cad * 2)  # FIT stores per-leg cadence, double for spm
         alt = r.get("altitude")
         if alt is not None:
             altitudes.append(alt)
