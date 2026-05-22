@@ -75,7 +75,6 @@ def _sync_recent(client, count=5):
 
 def _get_or_download_fit(client, label_id, sport_type):
     """下载FIT文件到本地缓存，已存在则跳过。返回文件路径或 None。"""
-    os.makedirs(FIT_DIR, exist_ok=True)
     fit_path = os.path.join(FIT_DIR, f"{label_id}.fit")
 
     if os.path.exists(fit_path):
@@ -83,6 +82,7 @@ def _get_or_download_fit(client, label_id, sport_type):
         return fit_path
 
     try:
+        os.makedirs(FIT_DIR, exist_ok=True)
         print(f"  下载FIT文件: {label_id}...")
         client.download_fit(label_id, sport_type, fit_path)
         print(f"  已保存: {fit_path}")
@@ -172,10 +172,12 @@ def cmd_analyze(target_id=None):
     evolab = json.loads(run["evolab_data"]) if run["evolab_data"] else None
 
     conn = get_db()
-    hr_rows = conn.execute(
-        "SELECT * FROM hr_zones WHERE label_id=?", (label_id,)
-    ).fetchall()
-    conn.close()
+    try:
+        hr_rows = conn.execute(
+            "SELECT * FROM hr_zones WHERE label_id=?", (label_id,)
+        ).fetchall()
+    finally:
+        conn.close()
     hr_zones = {r["zone_name"]: {"count": r["count"], "pct": r["pct"]} for r in hr_rows}
 
     # 加载生理档案

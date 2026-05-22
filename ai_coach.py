@@ -7,12 +7,14 @@ from anthropic import Anthropic
 
 
 def analyze_single_run(run_summary: dict, hr_zones_data: dict,
-                       profile: dict = None, evolab: dict = None) -> str:
+                       profile: dict = None, evolab: dict = None,
+                       time_series_metrics: dict = None) -> str:
     client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    prompt = _build_single_prompt(run_summary, hr_zones_data, profile, evolab)
+    prompt = _build_single_prompt(run_summary, hr_zones_data, profile, evolab,
+                                  time_series_metrics)
     resp = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=2048,
+        max_tokens=3072,
         system=_coach_system_prompt(),
         messages=[{"role": "user", "content": prompt}],
     )
@@ -44,8 +46,110 @@ def _coach_system_prompt():
     )
 
 
+def _format_ts_metrics_section(metrics: dict) -> str:
+    """Format per-second time series metrics as a markdown section."""
+    if not metrics:
+        return ""
+
+    lines = ["\n## 逐秒深度指标"]
+
+    # === Splits table ===
+    splits = metrics.get("splits")
+    if splits:
+        lines.append("\n### 每公里分段")
+        lines.append("| km | 配速 | 配速波动(s) | 平均心率 | 最大心率 | 步频 | 爬升(m) |")
+        lines.append("|----|------|------------|---------|---------|------|---------|")
+        for sp in splits:
+            lines.append(
+                f"| {sp.get('km', '?')} "
+                f"| {sp.get('pace_min_per_km', '?')} "
+                f"| {sp.get('pace_std_sec', '?')} "
+                f"| {sp.get('avg_hr', '-')} "
+                f"| {sp.get('max_hr', '-')} "
+                f"| {sp.get('avg_cadence', '-')} "
+                f"| {sp.get('elev_gain_m', '-')} |"
+            )
+
+    # === Pace Stability ===
+    ps = metrics.get("pace_stability")
+    if ps:
+        lines.append("\n### 配速稳定性")
+        lines.append(f"- 逐秒配速标准差: {ps.get('overall_std_sec', '?')}秒")
+        lines.append(f"- 变异系数(CV): {ps.get('cv_pct', '?')}%")
+        lines.append(f"- 评价: {ps.get('label', '?')}")
+
+    # === HR Drift ===
+    hd = metrics.get("hr_drift")
+    if hd:
+        lines.append("\n### 心率漂移")
+        lines.append(f"- 漂移率: {hd.get('drift_bpm_per_hour', '?')} bpm/小时")
+        lines.append(f"- R²: {hd.get('r_squared', '?')}")
+        lines.append(f"- 评价: {hd.get('label', '?')}")
+
+    # === Cadence ===
+    cd = metrics.get("cadence")
+    if cd:
+        lines.append("\n### 步频")
+        lines.append(f"- 平均: {cd.get('mean', '?')} spm | 标准差: {cd.get('std', '?')} | CV: {cd.get('cv_pct', '?')}%")
+        lines.append(f"- 评价: {cd.get('label', '?')}")
+
+    # === Aerobic Decoupling ===
+    ad = metrics.get("aerobic_decoupling")
+    if ad:
+        lines.append("\n### 有氧解耦")
+        lines.append(f"- 解耦率: {ad.get('decoupling_pct', '?')}%")
+        lines.append(f"- 评价: {ad.get('label', '?')}")
+
+    # === Efficiency Trend ===
+    et = metrics.get("efficiency_trend")
+    if et:
+        lines.append("\n### 效率趋势 (配速/心率比)")
+        lines.append(f"- 起始: {et.get('start_ratio', '?')} → 结束: {et.get('end_ratio', '?')}")
+        lines.append(f"- 变化: {et.get('change_pct', '?')}%")
+        lines.append(f"- 评价: {et.get('trend', '?')}")
+
+    # === Pace Distribution ===
+    pd = metrics.get("pace_distribution")
+    if pd:
+        lines.append("\n### 配速分布")
+        lines.append("| 区间 | 时长(秒) | 占比 |")
+        lines.append("|------|---------|------|")
+        for zone, data in pd.items():
+            lines.append(f"| {zone} | {data.get('seconds', 0)} | {data.get('pct', 0)}% |")
+
+    # === Elevation ===
+    elev = metrics.get("elevation")
+    if elev:
+        lines.append("\n### 海拔")
+        lines.append(f"- 累计爬升: {elev.get('total_ascent_m', '?')}m"
+                     f" | 累计下降: {elev.get('total_descent_m', '?')}m")
+
+    # === Optional: Temperature ===
+    temp = metrics.get("temperature")
+    if temp:
+        lines.append("\n### 温度")
+        if isinstance(temp, dict):
+            for k, v in temp.items():
+                lines.append(f"- {k}: {v}")
+        else:
+            lines.append(f"- 温度: {temp}")
+
+    # === Optional: Power ===
+    power = metrics.get("power")
+    if power:
+        lines.append("\n### 功率")
+        if isinstance(power, dict):
+            for k, v in power.items():
+                lines.append(f"- {k}: {v}")
+        else:
+            lines.append(f"- 功率: {power}")
+
+    return "\n".join(lines)
+
+
 def _build_single_prompt(s: dict, hr_zones_data: dict,
-                         profile: dict, evolab: dict) -> str:
+                         profile: dict, evolab: dict,
+                         time_series_metrics: dict = None) -> str:
     parts = []
 
     # === 跑者档案 ===
@@ -82,6 +186,10 @@ def _build_single_prompt(s: dict, hr_zones_data: dict,
         for zone, data in hr_zones_data.items():
             parts.append(f"- {zone}: {data['pct']}%")
 
+    # 逐秒深度指标
+    if time_series_metrics:
+        parts.append(_format_ts_metrics_section(time_series_metrics))
+
     # 近7天趋势
     if profile and profile.get("trend_7d"):
         parts.append("\n## 近7天训练趋势")
@@ -91,11 +199,44 @@ def _build_single_prompt(s: dict, hr_zones_data: dict,
     parts.append("\n## 请分析")
     parts.append("1. 结合跑者的VO2max({}ml/kg/min)和乳酸阈值心率({}bpm)，这次训练在什么强度区间？是否合理？".format(
         profile.get("vo2max", "?") if profile else "?", profile.get("lthr", "?") if profile else "?"))
-    parts.append("2. 心率-配速匹配度如何？心率漂移是否有问题？")
-    parts.append("3. 步频和跑姿效率（垂直振幅、触地时间）如何？")
-    parts.append("4. 结合HRV({}ms)和恢复状态({}%)，接下来应该做什么训练？".format(
-        profile.get("hrv_latest", "?") if profile else "?",
-        profile.get("recovery_pct", "?") if profile else "?"))
+
+    # Question 2: HR-drift / pace-HR matching
+    if time_series_metrics:
+        hd = time_series_metrics.get("hr_drift")
+        if hd:
+            parts.append("2. 心率漂移为{} bpm/小时(R²={})，有氧能力如何？".format(
+                hd.get("drift_bpm_per_hour", "?"), hd.get("r_squared", "?")))
+        else:
+            parts.append("2. 心率-配速匹配度如何？心率漂移是否有问题？")
+    else:
+        parts.append("2. 心率-配速匹配度如何？心率漂移是否有问题？")
+
+    # Question 3: Cadence / running form
+    if time_series_metrics:
+        cd = time_series_metrics.get("cadence")
+        if cd:
+            parts.append("3. 步频均值{}spm(CV={}%)，步频是否理想？跑姿效率（垂直振幅、触地时间）如何？".format(
+                cd.get("mean", "?"), cd.get("cv_pct", "?")))
+        else:
+            parts.append("3. 步频和跑姿效率（垂直振幅、触地时间）如何？")
+    else:
+        parts.append("3. 步频和跑姿效率（垂直振幅、触地时间）如何？")
+
+    # Question 4: HRV + recovery + aerobic decoupling + efficiency trend
+    if time_series_metrics:
+        ad = time_series_metrics.get("aerobic_decoupling")
+        et = time_series_metrics.get("efficiency_trend")
+        decoupling_str = ad.get("decoupling_pct", "?") if ad else "?"
+        trend_str = et.get("trend", "?") if et else "?"
+        parts.append("4. 结合HRV({}ms)、恢复状态({}%)、有氧解耦({}%)和效率趋势({})，接下来应该做什么训练？".format(
+            profile.get("hrv_latest", "?") if profile else "?",
+            profile.get("recovery_pct", "?") if profile else "?",
+            decoupling_str, trend_str))
+    else:
+        parts.append("4. 结合HRV({}ms)和恢复状态({}%)，接下来应该做什么训练？".format(
+            profile.get("hrv_latest", "?") if profile else "?",
+            profile.get("recovery_pct", "?") if profile else "?"))
+
     parts.append("5. 有没有伤病隐患？")
 
     return "\n".join(parts)
