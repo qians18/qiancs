@@ -137,6 +137,8 @@ def parse_fit(file_path: str) -> dict:
             "speed_ms": speeds,
             "cadence": cadences,
             "altitude_m": altitudes,
+            "temperature": temperatures,
+            "power_w": powers,
         },
         "lap_count": len(laps),
         "raw_laps": _extract_laps(laps),
